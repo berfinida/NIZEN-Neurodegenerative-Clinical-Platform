@@ -1,48 +1,111 @@
-# 🛡️ DMD Guardian Global Pro v5.0
-**Geliştirici:** Berfin Nida Öztürk  
-**Canlı Uygulama:** [Buradan Erişebilirsiniz](https://dmd-guardian-pro-y4ubeoavxhhyxwcffbzy9p.streamlit.app/)
+🧠 NIZEN | Neurodegenerative Clinical Platform
 
----
+NIZEN is a modular clinical monitoring platform designed for neurodegenerative diseases.
 
-## 🧬 Vizyon ve Misyon
-**DMD Guardian Global Pro**, Duchenne Musküler Distrofi (DMD) ile yaşayan bireyler, aileler ve hekimler için tasarlanmış bir **dijital asistan ve klinik karar destek mekanizmasıdır.** Nadir hastalıklar yönetiminde teknolojinin gücünü kullanarak; doğru bilgiye hızlı erişimi, güvenli veri takibini ve acil durumlarda hayat kurtarıcı protokolleri bir araya getirmeyi hedefler.
+The current implementation focuses on Duchenne Muscular Dystrophy (DMD), with a scalable architecture planned to support additional conditions in future versions.
 
----
+Built with Streamlit, SQLite, and Google Sheets integration, NIZEN operates in a hybrid local + cloud environment.
 
-## ✨ Öne Çıkan Modüller
+🎯 Vision
 
-### 1. 🧪 Klinik Hesaplayıcı (Zeka Modülü)
-- **Dinamik Dozaj:** Yaş ve kiloya göre steroid (Deflazacort) doz tahminleri.
-- **Evre Analizi:** Hastanın bulunduğu klinik evreye (Ambulatuar/Non-Ambulatuar) göre özelleştirilmiş bakım önerileri.
+NIZEN aims to become a unified clinical tracking and collaboration platform for:
 
-### 2. 🏃 Gelişmiş NSAA Takibi
-- **Klinik Skorlama:** Kuzey Yıldızı Ambulatuar Değerlendirme ölçeği ile fonksiyonel kapasite ölçümü.
-- **Veri Görselleştirme:** Kas gruplarının performansını gösteren interaktif grafikler ve doktorlar için özet raporlar.
+Duchenne Muscular Dystrophy (DMD)
 
-### 3. 🚨 Acil Durum & Kritik Bakım
-- **Anestezi Protokolü:** DMD hastaları için hayati risk taşıyan ajanlara (Süksinilkolin/Gaz) karşı tek tuşla hekim bilgilendirme ekranı.
-- **Solunum Yönetimi:** Oksijen seviyesi ve NIV (BiPAP) kullanımı için hayati uyarılar.
+ALS (planned)
 
-### 4. ⚖️ Hukuki ve Sosyal Rehber
-- **Yasal Haklar:** ÖTV muafiyeti, eğitim desteği ve rapor süreçleri hakkında güncel mevzuat rehberi.
-- **Klinik Takvim:** 6 aylık ve yıllık kontrolleri içeren akıllı takip listesi.
+SMA (planned)
 
----
+Other neurodegenerative disorders (future expansion)
 
-## 🔒 Güvenlik ve Gizlilik (KVKK)
-Bu uygulama **"Gizlilik Odaklı Tasarım" (Privacy by Design)** ilkesiyle geliştirilmiştir:
-- Kullanıcı verileri hiçbir veri tabanına kaydedilmez.
-- Tüm işlemler yerel tarayıcı belleğinde (RAM) gerçekleşir.
-- Oturum kapatıldığında tüm tıbbi veriler kalıcı olarak imha edilir.
+The system is designed to be disease-modular and extensible.
 
----
+🚀 Current Module: DMD
+🔐 Secure Authentication
 
-## 🛠️ Kurulum
-Uygulamayı yerel bilgisayarınızda çalıştırmak için:
+Role-based access (Family / Doctor / Researcher / Admin)
 
-1. Depoyu klonlayın: `git clone https://github.com/berfinida/dmd-guardian-pro.git`
-2. Gereksinimleri yükleyin: `pip install -r requirements.txt`
-3. Çalıştırın: `streamlit run dmd_final_v50.py`
+Password hashing (bcrypt / fallback support)
 
----
-© 2026 **Berfin Nida Öztürk** | DMD Guardian Global Pro - *Geleceği Bugünden İnşa Ediyoruz.*
+Persistent session tokens
+
+Admin bootstrap support
+
+📊 Clinical Tracking
+
+NSAA score monitoring
+
+Weight & age tracking
+
+Historical data logging
+
+Timestamp-based conflict resolution
+
+☁️ Hybrid Architecture
+
+Local-first SQLite storage
+
+Google Sheets cloud sync
+
+Offline-safe sync queue
+
+Automatic health checks
+
+🤖 Optional AI Assistant
+
+OpenAI API integration
+
+Safe medical-response prompting
+
+Escalation guidance for emergencies
+
+📰 Research & News Feed
+
+DMD-related RSS integration
+
+Language filtering (TR / EN)
+
+🏗️ Tech Stack
+
+Python
+
+Streamlit
+
+SQLite
+
+Pandas
+
+streamlit-gsheets
+
+bcrypt
+
+ReportLab
+
+📂 Project Structure
+final_v50.py
+/data
+   ├── dmd_local.db
+   ├── dmd_users.json
+   ├── dmd_profiles.json
+   ├── sync_queue.json
+   └── uploads/
+⚙️ Installation
+pip install -r requirements.txt
+streamlit run final_v50.py
+🔮 Roadmap
+
+Multi-disease module architecture
+
+Advanced analytics dashboard
+
+Clinical report generation
+
+Research-mode data export
+
+Secure multi-center deployment
+
+Regulatory compliance pathway
+
+⚠️ Disclaimer
+
+NIZEN is currently a research-oriented prototype and is not intended for certified medical deployment without regulatory approval.
